@@ -1,23 +1,23 @@
 from django.shortcuts import render,redirect
 
-from . models import Categoria,Producto,PedidoDetalle
+from .models import Categoria, PedidoDetalle,Producto
+
+
 
 # Create your views here.
 def index(request):
-    # request.session['titulo'] = "MODA DJANGO"
-    listaproductos = Producto.objects.all()
-    listaCategoria = Categoria.objects.all()
+    listaProductos = Producto.objects.all()
+    listaCategorias = Categoria.objects.all()
     context = {
-        'productos':listaproductos,
-        'categorias': listaCategoria
+        'productos':listaProductos,
+        'categorias':listaCategorias
     }
-
     return render(request,'index.html',context)
 
 def producto(request,producto_id):
-    objproducto = Producto.objects.get(pk=producto_id)
+    objProducto = Producto.objects.get(pk=producto_id)
     context = {
-        'producto': objproducto
+        'producto':objProducto
     }
     return render(request,'producto.html',context)
 
@@ -30,6 +30,8 @@ def productosPorCategoria(request,categoria_id):
         'categorias':listaCategorias
     }
     return render(request,'index.html',context)
+
+########### CARRITO DE COMPRAS ##############
 
 from app.carrito import Cart
 
@@ -45,6 +47,9 @@ def agregarCarrito(request,producto_id):
     return render(request,'carrito.html')
 
 def eliminarProductoCarrito(request,producto_id):
+    """
+    funcion que elimina un producto del carrito de compras
+    """
     objProducto = Producto.objects.get(id=producto_id)
     carritoProducto = Cart(request)
     carritoProducto.delete(objProducto)
@@ -56,7 +61,7 @@ def limpiarCarrito(request):
     carritoProducto.clear()
     return render(request,'carrito.html')
 
-#? LOGIN DE USUARIOS
+############# LOGIN DE USUARIOS ###################
 
 from django.contrib.auth.models import User
 from django.contrib.auth import login,logout,authenticate
@@ -162,32 +167,75 @@ def actualizarCliente(request):
 ########### PEDIDOS ########################
 from .models import Pedido,PedidoDetalle
 
+#### PARA PAYPAL
+from django.conf import settings
+from paypal.standard.forms import PayPalPaymentsForm
+
 def registrarPedido(request):
     if request.user.id is not None:
-        #registra cabecera del pedido
-        clientePedido = Cliente.objects.get(usuario=request.user)
-        nuevoPedido = Pedido()
-        nuevoPedido.cliente = clientePedido
-        nuevoPedido.save()
+        try:
+            
+            #registra cabecera del pedido
+            clientePedido = Cliente.objects.get(usuario=request.user)
+            nuevoPedido = Pedido()
+            nuevoPedido.cliente = clientePedido
+            nuevoPedido.save()
 
-        #registra detalle del pedido
-        carritoPedido = request.session.get("cart")
-        for key,value in carritoPedido.items():
+            #registra detalle del pedido
+            carritoPedido = request.session.get("cart")
+            totalPedido = 0
+            for key,value in carritoPedido.items():
 
-            productoPedido = Producto.objects.get(pk=value["producto_id"])
+                productoPedido = Producto.objects.get(pk=value["producto_id"])
 
-            nuevoPedidoDetalle = PedidoDetalle()
-            nuevoPedidoDetalle.pedido = nuevoPedido
-            nuevoPedidoDetalle.producto = productoPedido
-            nuevoPedidoDetalle.cantidad = int(value["cantidad"])
-            nuevoPedidoDetalle.save()
+                nuevoPedidoDetalle = PedidoDetalle()
+                nuevoPedidoDetalle.pedido = nuevoPedido
+                nuevoPedidoDetalle.producto = productoPedido
+                nuevoPedidoDetalle.cantidad = int(value["cantidad"])
+                nuevoPedidoDetalle.save()
+                totalPedido += float(value["cantidad"]) * float(productoPedido.precio)
 
-        carrito = Cart(request)
-        carrito.clear()
+            #### REGISTRAMOS EL TOTAL DEL PEDIDO
+            nuevoPedido.total = totalPedido
+            nuevoPedido.save()
 
-        return render(request,'gracias.html')
+            ###BOTON DE PAYPAL
+            request.session['paypal_pid'] = nuevoPedido.id
+            host = request.get_host()
+            paypal_datos = {
+                'business': settings.PAYPAL_RECEIVER_EMAIL,
+                'amount': totalPedido,
+                'item_name':'PEDIDO #' + str(nuevoPedido.id),
+                'invoice': str(nuevoPedido.id),
+                'notify_url':'http://' + host + '/' + 'paypal-ipn',
+                'return_url':'http://' + host + '/' + 'pedidopagado'
+            }
 
+            formPedidoPaypal = PayPalPaymentsForm(initial=paypal_datos)
+
+            context = {
+                'pedido':nuevoPedido,
+                'formpaypal':formPedidoPaypal
+            }
+
+
+            carrito = Cart(request)
+            carrito.clear()
+
+            return render(request,'pago.html',context)
+        except:
+            return redirect('/login')
     else:
         return redirect('/login')
 
-    
+def pedidopagado(request):
+    pedidoID = request.session.get("paypal_pid")
+    nroRecibo = request.GET.get('PayerID','')
+    print("nro de recibo paypal:" + nroRecibo)
+    print("id de pedido : " + str(pedidoID))
+    pedidoEditar = Pedido.objects.get(pk=pedidoID)
+    pedidoEditar.estado = 'pagado'
+    pedidoEditar.nro_recibo = nroRecibo
+    pedidoEditar.save()
+
+    return render(request,'gracias.html')
